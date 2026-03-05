@@ -1,0 +1,8 @@
+# .coderabbit.yaml
+language: "en-US"
+reviews:
+  profile: "chill"
+  auto_review:
+    enabled: true
+    draft: false
+  request_changes_workflow: false
