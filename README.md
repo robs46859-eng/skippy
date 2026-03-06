@@ -1,47 +1,66 @@
-# Skipper ⚓️
+# Vault 💸
 
-A pregnancy/mother-focused navigation app with calm, safety-first UX.
+Mobile-first AI budgeting app optimized for retention and virality.
+
+Vault automatically tracks spending, categorizes transactions, enforces budgets, predicts cash flow, and drives savings habits with instant feedback plus social growth mechanics.
+
+## Core Product Pillars
+- Secure auth and user-scoped data access (Supabase Auth + RLS)
+- Bank sync-ready architecture (provider adapter pattern)
+- Real-time budget dashboard and overspending alerts
+- Auto expense categorization with correction feedback loop
+- Savings goals, streaks, and milestone celebrations
+- Predictive cash-flow risk insights
+- AI financial summaries + budget variance recommendations
+- Viral loop: share cards, referrals, social-proof benchmarks
+
+## Repository Highlights
+- `App.tsx`  
+  Mobile-first premium fintech UI prototype with key product tabs:
+  Dashboard, Activity, Goals, Social, AI Insights.
+
+- `docs/vault-fullstack-blueprint.md`  
+  Full-stack architecture, backend logic, API surface, frontend page map, security model, viral mechanics, and MVP build order.
+
+- `supabase/migrations/01_vault_budgeting_schema.sql`  
+  Production-oriented Vault schema with:
+  - banking integration primitives
+  - transactions and categorization
+  - budgets, snapshots, variances, recommendations
+  - alerts, forecasts, AI summaries
+  - savings goals, streaks, milestones
+  - weekly share cards, referral system, benchmarks
+  - RLS policies + realtime table publication
 
 ## Tech Stack
 - **Frontend**: React Native (Expo)
-- **Styling**: NativeWind (Tailwind CSS)
-- **Backend**: Supabase (Postgres, Auth, Storage)
 - **State**: Zustand
-- **Icons**: Lucide React Native
+- **Backend**: Supabase (Postgres, Auth, Realtime, Storage)
+- **AI/Integrations (planned)**: OpenAI + bank provider adapter (Plaid/Teller/TrueLayer)
 
-## Getting Started
-
-### 1. Clone & Install
+## Quick Start
+1. Install deps:
 ```bash
-git clone https://github.com/robs46859-eng/skippy.git
-cd skippy
 npm install
 ```
 
-### 2. Environment Setup
-Create a `.env` file based on `.env.example`:
+2. Configure environment:
 ```bash
-EXPO_PUBLIC_SUPABASE_URL=your_project_url
-EXPO_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
+cp .env.example .env
 ```
 
-### 3. Database Setup
-Apply migrations in `/supabase/migrations` to your Supabase project using the SQL Editor or Supabase CLI.
+3. Apply migrations in `supabase/migrations` to your Supabase project.
 
-### 4. Run App
+4. Run app:
 ```bash
 npx expo start
 ```
 
-## MVP Features
-- [x] High-fidelity UI with custom design tokens
-- [x] Onboarding flow (Stage selection)
-- [x] Home Map interface with Comfort Mode toggle
-- [x] Quick actions for Essentials (Bathroom, Nursing, etc.)
-- [x] Essentials Finder list with ratings & distance
-- [x] Supabase schema with RLS and automated aggregates
-- [x] Labor Mode (Emergency navigation interface)
+## Suggested MVP Sequence
+1. Activation core (auth + bank connect + budget setup)
+2. Habit loop (alerts + goals + streaks + forecast)
+3. AI layer (summaries + variance + recommendations)
+4. Viral loop (share cards + referrals + benchmarks)
 
-## Design System
-- **Colors**: Soft Teal (#4FB6B2), Warm Coral (#FF8E7A), Warm Cream (#FFF8F3)
-- **Components**: Rounded corners (20px), soft shadows, accessible tap targets (>= 48px)
+Detailed sequencing and success gates are in:
+`docs/vault-fullstack-blueprint.md`.
