@@ -18,6 +18,11 @@ Vault automatically tracks spending, categorizes transactions, enforces budgets,
 - `App.tsx`  
   Mobile-first premium fintech UI prototype with key product tabs:
   Dashboard, Activity, Goals, Social, AI Insights.
+  Includes secure auth and live bank-connect flow:
+  1) create link token
+  2) exchange public token
+  3) sync transactions
+  4) refresh dashboard from realtime-backed views
 
 - `docs/vault-fullstack-blueprint.md`  
   Full-stack architecture, backend logic, API surface, frontend page map, security model, viral mechanics, and MVP build order.

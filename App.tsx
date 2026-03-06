@@ -1,50 +1,74 @@
 import { StatusBar } from 'expo-status-bar';
-import { useMemo, useState } from 'react';
+import { Session } from '@supabase/supabase-js';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
+import { supabase } from './src/lib/supabase';
+import {
+  createBankLinkToken,
+  exchangeBankPublicToken,
+  generateInsights,
+  generateWeeklyCard,
+  syncBankConnection,
+  WeeklyCardGenerateResponse,
+} from './src/lib/vaultApi';
 
-type TabKey = 'dashboard' | 'transactions' | 'goals' | 'social' | 'insights';
+type TabKey = 'dashboard' | 'activity' | 'goals' | 'social' | 'insights';
+type BankProvider = 'plaid' | 'sandbox';
 
-type BudgetBucket = {
-  name: string;
-  spent: number;
-  limit: number;
+type DashboardSnapshot = {
+  periodStart: string;
+  periodEnd: string;
+  totalSpent: number;
+  totalBudgetLimit: number;
+  totalRemaining: number;
+  projectedPeriodSpend: number;
+  avgUtilizationPct: number;
 };
 
-type SavingsGoal = {
-  name: string;
-  progress: number;
-  target: number;
-  dueLabel: string;
+type AlertCounts = {
+  unreadTotal: number;
+  unreadCritical: number;
+  unreadOverspend: number;
 };
 
-const budgetBuckets: BudgetBucket[] = [
-  { name: 'Needs', spent: 1260, limit: 1800 },
-  { name: 'Wants', spent: 840, limit: 900 },
-  { name: 'Saving', spent: 640, limit: 1000 },
-];
+type GoalRow = {
+  id: string;
+  title: string;
+  currentAmount: number;
+  targetAmount: number;
+  status: string;
+};
 
-const goals: SavingsGoal[] = [
-  { name: 'Emergency Fund', progress: 3200, target: 5000, dueLabel: 'On track' },
-  { name: 'Summer Trip', progress: 920, target: 1800, dueLabel: '67 days left' },
-];
+type TransactionRow = {
+  id: string;
+  merchantName: string;
+  description: string;
+  amount: number;
+  postedAt: string;
+};
 
-const recentTransactions = [
-  { merchant: 'Whole Foods', amount: -72.4, category: 'Groceries', confidence: 0.98 },
-  { merchant: 'Uber', amount: -18.2, category: 'Transport', confidence: 0.94 },
-  { merchant: 'Netflix', amount: -15.49, category: 'Subscriptions', confidence: 0.99 },
-  { merchant: 'Payroll', amount: 2300, category: 'Income', confidence: 1 },
-];
+type ForecastRow = {
+  horizonDays: number;
+  predictedEndBalance: number;
+  predictedMinBalance: number;
+  riskLevel: string;
+};
 
 const tabLabels: Record<TabKey, string> = {
   dashboard: 'Dashboard',
-  transactions: 'Activity',
+  activity: 'Activity',
   goals: 'Goals',
   social: 'Social',
   insights: 'AI',
@@ -67,15 +91,477 @@ function ProgressBar({ progress }: { progress: number }) {
 }
 
 export default function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [authBooting, setAuthBooting] = useState(true);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authMode, setAuthMode] = useState<'sign_in' | 'sign_up'>('sign_in');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
+
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
+  const [provider, setProvider] = useState<BankProvider>('sandbox');
+  const [linkToken, setLinkToken] = useState<string | null>(null);
+  const [publicToken, setPublicToken] = useState('');
+  const [connectedConnectionId, setConnectedConnectionId] = useState<string | null>(null);
+  const [bankMessage, setBankMessage] = useState<string | null>(null);
+  const [bankLoading, setBankLoading] = useState(false);
+
+  const [dashboardSnapshot, setDashboardSnapshot] = useState<DashboardSnapshot | null>(null);
+  const [alertCounts, setAlertCounts] = useState<AlertCounts>({
+    unreadTotal: 0,
+    unreadCritical: 0,
+    unreadOverspend: 0,
+  });
+  const [goals, setGoals] = useState<GoalRow[]>([]);
+  const [transactions, setTransactions] = useState<TransactionRow[]>([]);
+  const [forecast, setForecast] = useState<ForecastRow | null>(null);
+  const [latestSummary, setLatestSummary] = useState<string | null>(null);
+  const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
+
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightsMessage, setInsightsMessage] = useState<string | null>(null);
+  const [weeklyCard, setWeeklyCard] = useState<WeeklyCardGenerateResponse['card'] | null>(null);
+  const [weeklyCardReferralCode, setWeeklyCardReferralCode] = useState<string | null>(null);
+  const [weeklyCardLoading, setWeeklyCardLoading] = useState(false);
+
+  useEffect(() => {
+    const bootstrapSession = async () => {
+      const { data } = await supabase.auth.getSession();
+      setSession(data.session ?? null);
+      setAuthBooting(false);
+    };
+
+    bootstrapSession();
+    const authSub = supabase.auth.onAuthStateChange((_event, currentSession) => {
+      setSession(currentSession);
+    });
+
+    return () => {
+      authSub.data.subscription.unsubscribe();
+    };
+  }, []);
+
+  const loadDashboard = useCallback(async () => {
+    const userId = session?.user.id;
+    if (!userId) {
+      setDashboardSnapshot(null);
+      setAlertCounts({ unreadTotal: 0, unreadCritical: 0, unreadOverspend: 0 });
+      setGoals([]);
+      setTransactions([]);
+      setForecast(null);
+      setLatestSummary(null);
+      return;
+    }
+
+    setDashboardLoading(true);
+    setDashboardError(null);
+
+    try {
+      const [
+        snapshotsRes,
+        alertCountsRes,
+        goalsRes,
+        txRes,
+        forecastRes,
+        summaryRes,
+      ] = await Promise.all([
+        supabase
+          .from('vault_dashboard_snapshots')
+          .select(
+            'period_start, period_end, total_spent, total_budget_limit, total_remaining, projected_period_spend, avg_utilization_pct',
+          )
+          .eq('user_id', userId)
+          .order('period_start', { ascending: false })
+          .limit(1),
+        supabase
+          .from('vault_dashboard_alert_counts')
+          .select('unread_total, unread_critical, unread_overspend')
+          .eq('user_id', userId)
+          .maybeSingle(),
+        supabase
+          .from('vault_savings_goals')
+          .select('id, title, current_amount, target_amount, status')
+          .eq('user_id', userId)
+          .eq('status', 'active')
+          .order('created_at', { ascending: false })
+          .limit(3),
+        supabase
+          .from('vault_transactions')
+          .select('id, merchant_name, description, amount, posted_at')
+          .eq('user_id', userId)
+          .order('posted_at', { ascending: false })
+          .limit(6),
+        supabase
+          .from('vault_cashflow_forecasts')
+          .select('horizon_days, predicted_end_balance, predicted_min_balance, risk_level')
+          .eq('user_id', userId)
+          .order('generated_at', { ascending: false })
+          .limit(1),
+        supabase
+          .from('vault_ai_summaries')
+          .select('summary_markdown')
+          .eq('user_id', userId)
+          .order('generated_at', { ascending: false })
+          .limit(1),
+      ]);
+
+      if (snapshotsRes.error) throw snapshotsRes.error;
+      if (alertCountsRes.error) throw alertCountsRes.error;
+      if (goalsRes.error) throw goalsRes.error;
+      if (txRes.error) throw txRes.error;
+      if (forecastRes.error) throw forecastRes.error;
+      if (summaryRes.error) throw summaryRes.error;
+
+      const snapshotRow = snapshotsRes.data?.[0] as
+        | {
+            period_start: string;
+            period_end: string;
+            total_spent: number;
+            total_budget_limit: number;
+            total_remaining: number;
+            projected_period_spend: number;
+            avg_utilization_pct: number;
+          }
+        | undefined;
+
+      if (snapshotRow) {
+        setDashboardSnapshot({
+          periodStart: snapshotRow.period_start,
+          periodEnd: snapshotRow.period_end,
+          totalSpent: Number(snapshotRow.total_spent ?? 0),
+          totalBudgetLimit: Number(snapshotRow.total_budget_limit ?? 0),
+          totalRemaining: Number(snapshotRow.total_remaining ?? 0),
+          projectedPeriodSpend: Number(snapshotRow.projected_period_spend ?? 0),
+          avgUtilizationPct: Number(snapshotRow.avg_utilization_pct ?? 0),
+        });
+      } else {
+        setDashboardSnapshot(null);
+      }
+
+      const alertRow = alertCountsRes.data as
+        | {
+            unread_total: number;
+            unread_critical: number;
+            unread_overspend: number;
+          }
+        | null;
+
+      setAlertCounts({
+        unreadTotal: Number(alertRow?.unread_total ?? 0),
+        unreadCritical: Number(alertRow?.unread_critical ?? 0),
+        unreadOverspend: Number(alertRow?.unread_overspend ?? 0),
+      });
+
+      const nextGoals: GoalRow[] = (goalsRes.data ?? []).map((row) => ({
+        id: String(row.id),
+        title: String(row.title),
+        currentAmount: Number(row.current_amount ?? 0),
+        targetAmount: Number(row.target_amount ?? 0),
+        status: String(row.status ?? 'active'),
+      }));
+      setGoals(nextGoals);
+
+      const nextTx: TransactionRow[] = (txRes.data ?? []).map((row) => ({
+        id: String(row.id),
+        merchantName: String(row.merchant_name ?? ''),
+        description: String(row.description ?? ''),
+        amount: Number(row.amount ?? 0),
+        postedAt: String(row.posted_at ?? ''),
+      }));
+      setTransactions(nextTx);
+
+      const forecastRow = forecastRes.data?.[0] as
+        | {
+            horizon_days: number;
+            predicted_end_balance: number;
+            predicted_min_balance: number;
+            risk_level: string;
+          }
+        | undefined;
+      setForecast(
+        forecastRow
+          ? {
+              horizonDays: Number(forecastRow.horizon_days ?? 14),
+              predictedEndBalance: Number(forecastRow.predicted_end_balance ?? 0),
+              predictedMinBalance: Number(forecastRow.predicted_min_balance ?? 0),
+              riskLevel: String(forecastRow.risk_level ?? 'low'),
+            }
+          : null,
+      );
+
+      const summaryRow = summaryRes.data?.[0] as
+        | { summary_markdown: string }
+        | undefined;
+      setLatestSummary(summaryRow?.summary_markdown ?? null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to refresh dashboard data.';
+      setDashboardError(message);
+    } finally {
+      setDashboardLoading(false);
+    }
+  }, [session?.user.id]);
+
+  useEffect(() => {
+    loadDashboard();
+  }, [loadDashboard]);
+
+  useEffect(() => {
+    const userId = session?.user.id;
+    if (!userId) return;
+
+    const channel = supabase
+      .channel(`vault-live-${userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'vault_budget_snapshots',
+          filter: `user_id=eq.${userId}`,
+        },
+        loadDashboard,
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'vault_alerts',
+          filter: `user_id=eq.${userId}`,
+        },
+        loadDashboard,
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'vault_savings_goals',
+          filter: `user_id=eq.${userId}`,
+        },
+        loadDashboard,
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [loadDashboard, session?.user.id]);
 
   const totals = useMemo(() => {
-    const spent = budgetBuckets.reduce((sum, bucket) => sum + bucket.spent, 0);
-    const limit = budgetBuckets.reduce((sum, bucket) => sum + bucket.limit, 0);
-    const remaining = Math.max(limit - spent, 0);
-    const projected = spent + 620;
-    return { spent, limit, remaining, projected };
+    if (dashboardSnapshot) {
+      return {
+        spent: dashboardSnapshot.totalSpent,
+        limit: dashboardSnapshot.totalBudgetLimit,
+        remaining: dashboardSnapshot.totalRemaining,
+        projected: dashboardSnapshot.projectedPeriodSpend,
+      };
+    }
+
+    return {
+      spent: 0,
+      limit: 0,
+      remaining: 0,
+      projected: 0,
+    };
+  }, [dashboardSnapshot]);
+
+  const handleAuth = useCallback(async () => {
+    if (!email.trim() || !password.trim()) {
+      setAuthError('Email and password are required.');
+      return;
+    }
+
+    setAuthLoading(true);
+    setAuthError(null);
+    try {
+      if (authMode === 'sign_in') {
+        const { error } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
+        });
+        if (error) throw error;
+        Alert.alert('Account created', 'Check your inbox if your project requires email confirmation.');
+        setAuthMode('sign_in');
+      }
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Auth failed.');
+    } finally {
+      setAuthLoading(false);
+    }
+  }, [authMode, email, password]);
+
+  const handleSignOut = useCallback(async () => {
+    await supabase.auth.signOut();
+    setConnectedConnectionId(null);
+    setLinkToken(null);
+    setPublicToken('');
+    setBankMessage(null);
+    setWeeklyCard(null);
+    setWeeklyCardReferralCode(null);
   }, []);
+
+  const handleCreateLinkToken = useCallback(async () => {
+    if (!session?.access_token) return;
+
+    setBankLoading(true);
+    setBankMessage(null);
+    try {
+      const response = await createBankLinkToken(session.access_token, provider);
+      setLinkToken(response.linkToken);
+      if (provider === 'sandbox' && !publicToken.trim()) {
+        setPublicToken(`sandbox-public-${Date.now()}`);
+      }
+      setBankMessage('Link token created. Complete provider authorization and paste public token below.');
+    } catch (error) {
+      setBankMessage(error instanceof Error ? error.message : 'Failed to create link token.');
+    } finally {
+      setBankLoading(false);
+    }
+  }, [provider, publicToken, session?.access_token]);
+
+  const handleExchangeAndSync = useCallback(async () => {
+    if (!session?.access_token) return;
+    if (!publicToken.trim()) {
+      setBankMessage('Public token is required.');
+      return;
+    }
+
+    setBankLoading(true);
+    setBankMessage(null);
+    try {
+      const exchange = await exchangeBankPublicToken(
+        session.access_token,
+        provider,
+        publicToken.trim(),
+      );
+      setConnectedConnectionId(exchange.connectionId);
+
+      const sync = await syncBankConnection(session.access_token, exchange.connectionId);
+      setBankMessage(
+        `Connected ${exchange.accountsLinked} account(s). Synced ${sync.transactionsProcessed} transactions.`,
+      );
+
+      await loadDashboard();
+      setPublicToken('');
+    } catch (error) {
+      setBankMessage(error instanceof Error ? error.message : 'Connection sync failed.');
+    } finally {
+      setBankLoading(false);
+    }
+  }, [loadDashboard, provider, publicToken, session?.access_token]);
+
+  const handleRunInsights = useCallback(async () => {
+    if (!session?.access_token) return;
+    setInsightsLoading(true);
+    setInsightsMessage(null);
+    try {
+      const response = await generateInsights(session.access_token);
+      setInsightsMessage(
+        `Insights refreshed • risk ${response.riskLevel.toUpperCase()} • ${response.recommendationsCreated} recommendations.`,
+      );
+      await loadDashboard();
+    } catch (error) {
+      setInsightsMessage(error instanceof Error ? error.message : 'Failed to generate insights.');
+    } finally {
+      setInsightsLoading(false);
+    }
+  }, [loadDashboard, session?.access_token]);
+
+  const handleGenerateCard = useCallback(async () => {
+    if (!session?.access_token) return;
+    setWeeklyCardLoading(true);
+    try {
+      const response = await generateWeeklyCard(session.access_token);
+      setWeeklyCard(response.card);
+      setWeeklyCardReferralCode(response.referralCode);
+    } catch (error) {
+      Alert.alert('Card generation failed', error instanceof Error ? error.message : 'Please try again.');
+    } finally {
+      setWeeklyCardLoading(false);
+    }
+  }, [session?.access_token]);
+
+  if (authBooting) {
+    return (
+      <SafeAreaView style={styles.safe}>
+        <StatusBar style="light" />
+        <View style={styles.center}>
+          <ActivityIndicator color="#5BC4FF" />
+          <Text style={styles.centerText}>Initializing secure session...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (!session) {
+    return (
+      <SafeAreaView style={styles.safe}>
+        <StatusBar style="light" />
+        <KeyboardAvoidingView
+          style={styles.authRoot}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <View style={styles.authCard}>
+            <Text style={styles.eyebrow}>VAULT</Text>
+            <Text style={styles.title}>Secure sign-in</Text>
+            <Text style={styles.cardBody}>
+              Authenticate to connect bank accounts, run budget intelligence, and sync real-time insights.
+            </Text>
+
+            <TextInput
+              style={styles.input}
+              autoCapitalize="none"
+              keyboardType="email-address"
+              value={email}
+              onChangeText={setEmail}
+              placeholder="Email"
+              placeholderTextColor="#778DB6"
+            />
+            <TextInput
+              style={styles.input}
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry
+              placeholder="Password"
+              placeholderTextColor="#778DB6"
+            />
+
+            {!!authError && <Text style={styles.errorText}>{authError}</Text>}
+
+            <Pressable onPress={handleAuth} style={styles.primaryButton} disabled={authLoading}>
+              <Text style={styles.primaryButtonText}>
+                {authLoading
+                  ? 'Working...'
+                  : authMode === 'sign_in'
+                  ? 'Sign in'
+                  : 'Create account'}
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => setAuthMode((prev) => (prev === 'sign_in' ? 'sign_up' : 'sign_in'))}
+              style={styles.ghostButton}
+            >
+              <Text style={styles.ghostButtonText}>
+                {authMode === 'sign_in'
+                  ? "Need an account? Sign up"
+                  : 'Already have an account? Sign in'}
+              </Text>
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -85,21 +571,89 @@ export default function App() {
           <View>
             <Text style={styles.eyebrow}>VAULT</Text>
             <Text style={styles.title}>Your money, on autopilot.</Text>
+            <Text style={styles.smallText}>{session.user.email}</Text>
           </View>
-          <View style={styles.streakPill}>
-            <Text style={styles.streakText}>🔥 11-day streak</Text>
-          </View>
+          <Pressable style={styles.streakPill} onPress={handleSignOut}>
+            <Text style={styles.streakText}>Sign out</Text>
+          </Pressable>
         </View>
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
           {activeTab === 'dashboard' && (
             <>
+              <Text style={styles.sectionTitle}>Bank Connect</Text>
+              <View style={styles.card}>
+                <View style={styles.rowSpace}>
+                  <Text style={styles.cardTitle}>Provider</Text>
+                  <View style={styles.inlineRow}>
+                    <Pressable
+                      style={[styles.providerChip, provider === 'sandbox' && styles.providerChipActive]}
+                      onPress={() => setProvider('sandbox')}
+                    >
+                      <Text
+                        style={[
+                          styles.providerChipText,
+                          provider === 'sandbox' && styles.providerChipTextActive,
+                        ]}
+                      >
+                        Sandbox
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.providerChip, provider === 'plaid' && styles.providerChipActive]}
+                      onPress={() => setProvider('plaid')}
+                    >
+                      <Text
+                        style={[
+                          styles.providerChipText,
+                          provider === 'plaid' && styles.providerChipTextActive,
+                        ]}
+                      >
+                        Plaid
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
+                <Pressable style={styles.secondaryButton} onPress={handleCreateLinkToken} disabled={bankLoading}>
+                  <Text style={styles.secondaryButtonText}>
+                    {bankLoading ? 'Preparing...' : '1) Launch Link'}
+                  </Text>
+                </Pressable>
+
+                {linkToken && (
+                  <Text style={styles.smallText}>
+                    Link token ready: {linkToken.slice(0, 16)}...{linkToken.slice(-6)}
+                  </Text>
+                )}
+                <TextInput
+                  style={styles.input}
+                  value={publicToken}
+                  onChangeText={setPublicToken}
+                  autoCapitalize="none"
+                  placeholder="2) Paste provider public token"
+                  placeholderTextColor="#778DB6"
+                />
+                <Pressable
+                  style={styles.primaryButton}
+                  onPress={handleExchangeAndSync}
+                  disabled={bankLoading || !publicToken.trim()}
+                >
+                  <Text style={styles.primaryButtonText}>
+                    {bankLoading ? 'Connecting...' : '3) Exchange + Sync + Refresh'}
+                  </Text>
+                </Pressable>
+                {!!connectedConnectionId && (
+                  <Text style={styles.smallText}>Connected ID: {connectedConnectionId}</Text>
+                )}
+                {!!bankMessage && <Text style={styles.cardBody}>{bankMessage}</Text>}
+              </View>
+
               <View style={[styles.card, styles.heroCard]}>
                 <Text style={styles.cardLabel}>Monthly Budget</Text>
                 <Text style={styles.heroNumber}>
                   {currency(totals.spent)} <Text style={styles.heroSub}>/ {currency(totals.limit)}</Text>
                 </Text>
-                <ProgressBar progress={totals.spent / totals.limit} />
+                <ProgressBar progress={totals.limit > 0 ? totals.spent / totals.limit : 0} />
                 <View style={styles.kpiRow}>
                   <View>
                     <Text style={styles.kpiLabel}>Remaining</Text>
@@ -111,53 +665,53 @@ export default function App() {
                   </View>
                 </View>
                 <View style={styles.alertBadge}>
-                  <Text style={styles.alertText}>⚠ Wants bucket is 93% used. Shift $120 from Dining.</Text>
+                  <Text style={styles.alertText}>
+                    Alerts: {alertCounts.unreadTotal} unread • {alertCounts.unreadCritical} critical •{' '}
+                    {alertCounts.unreadOverspend} overspend
+                  </Text>
                 </View>
               </View>
 
-              <Text style={styles.sectionTitle}>Budget Buckets</Text>
-              {budgetBuckets.map((bucket) => (
-                <View style={styles.card} key={bucket.name}>
-                  <View style={styles.rowSpace}>
-                    <Text style={styles.cardTitle}>{bucket.name}</Text>
-                    <Text style={styles.cardLabel}>
-                      {currency(bucket.spent)} / {currency(bucket.limit)}
-                    </Text>
-                  </View>
-                  <ProgressBar progress={bucket.spent / bucket.limit} />
-                </View>
-              ))}
-
-              <Text style={styles.sectionTitle}>14-Day Cash Flow</Text>
+              <Text style={styles.sectionTitle}>Cash-Flow Snapshot</Text>
               <View style={styles.card}>
                 <Text style={styles.cardBody}>
-                  You are likely to end the next 14 days with {currency(1460)} if spending trends stay stable.
-                  Main risk: weekend dining. Suggested cap: {currency(120)}.
+                  Forecast: {forecast ? currency(forecast.predictedEndBalance) : '--'} • Minimum balance:{' '}
+                  {forecast ? currency(forecast.predictedMinBalance) : '--'} • Risk:{' '}
+                  {forecast ? forecast.riskLevel.toUpperCase() : 'N/A'}
                 </Text>
+                <Pressable style={styles.secondaryButton} onPress={loadDashboard}>
+                  <Text style={styles.secondaryButtonText}>
+                    {dashboardLoading ? 'Refreshing...' : 'Refresh dashboard'}
+                  </Text>
+                </Pressable>
+                {!!dashboardError && <Text style={styles.errorText}>{dashboardError}</Text>}
               </View>
             </>
           )}
 
-          {activeTab === 'transactions' && (
+          {activeTab === 'activity' && (
             <>
               <Text style={styles.sectionTitle}>Auto-Categorized Transactions</Text>
-              {recentTransactions.map((txn) => (
-                <View style={styles.card} key={`${txn.merchant}-${txn.amount}`}>
+              {transactions.map((txn) => (
+                <View style={styles.card} key={txn.id}>
                   <View style={styles.rowSpace}>
                     <View>
-                      <Text style={styles.cardTitle}>{txn.merchant}</Text>
-                      <Text style={styles.cardLabel}>{txn.category}</Text>
+                      <Text style={styles.cardTitle}>{txn.merchantName || txn.description}</Text>
+                      <Text style={styles.cardLabel}>{txn.postedAt}</Text>
                     </View>
                     <Text style={[styles.amount, txn.amount > 0 ? styles.positive : styles.negative]}>
                       {txn.amount > 0 ? '+' : ''}
                       {currency(txn.amount)}
                     </Text>
                   </View>
-                  <Text style={styles.smallText}>
-                    Confidence {(txn.confidence * 100).toFixed(0)}% • tap to correct and train model
-                  </Text>
+                  <Text style={styles.smallText}>{txn.description}</Text>
                 </View>
               ))}
+              {transactions.length === 0 && (
+                <View style={styles.card}>
+                  <Text style={styles.cardBody}>No transactions yet. Connect a bank and run sync to populate activity.</Text>
+                </View>
+              )}
             </>
           )}
 
@@ -165,20 +719,25 @@ export default function App() {
             <>
               <Text style={styles.sectionTitle}>Savings Goals</Text>
               {goals.map((goal) => (
-                <View style={styles.card} key={goal.name}>
+                <View style={styles.card} key={goal.id}>
                   <View style={styles.rowSpace}>
-                    <Text style={styles.cardTitle}>{goal.name}</Text>
-                    <Text style={styles.cardLabel}>{goal.dueLabel}</Text>
+                    <Text style={styles.cardTitle}>{goal.title}</Text>
+                    <Text style={styles.cardLabel}>{goal.status}</Text>
                   </View>
                   <Text style={styles.cardLabel}>
-                    {currency(goal.progress)} of {currency(goal.target)}
+                    {currency(goal.currentAmount)} of {currency(goal.targetAmount)}
                   </Text>
-                  <ProgressBar progress={goal.progress / goal.target} />
+                  <ProgressBar progress={goal.targetAmount > 0 ? goal.currentAmount / goal.targetAmount : 0} />
                 </View>
               ))}
+              {goals.length === 0 && (
+                <View style={styles.card}>
+                  <Text style={styles.cardBody}>No active goals yet. Create a goal after your first sync to track streaks.</Text>
+                </View>
+              )}
               <View style={styles.card}>
                 <Text style={styles.cardTitle}>Milestone Celebration</Text>
-                <Text style={styles.cardBody}>You crossed $3,000 in emergency savings. Confetti moment unlocked.</Text>
+                <Text style={styles.cardBody}>Milestones and streak updates unlock automatically from goal progress events.</Text>
               </View>
             </>
           )}
@@ -187,13 +746,27 @@ export default function App() {
             <>
               <Text style={styles.sectionTitle}>Weekly Share Card</Text>
               <View style={[styles.card, styles.shareCard]}>
-                <Text style={styles.shareTitle}>This week I saved {currency(182)} with Vault.</Text>
-                <Text style={styles.cardBody}>
-                  Top win: cut impulse food spend by 26% • #VaultStreak #MoneyMoves
+                <Text style={styles.shareTitle}>
+                  {weeklyCard
+                    ? weeklyCard.headline
+                    : 'Generate your weekly savings card with one tap.'}
                 </Text>
-                <Pressable style={styles.primaryButton}>
-                  <Text style={styles.primaryButtonText}>Generate share card</Text>
+                {weeklyCard && (
+                  <Text style={styles.cardBody}>
+                    This week spend: {currency(weeklyCard.thisWeekSpend)} • Previous week:{' '}
+                    {currency(weeklyCard.previousWeekSpend)} • Saved {currency(weeklyCard.amountSaved)}
+                  </Text>
+                )}
+                <Pressable style={styles.primaryButton} onPress={handleGenerateCard} disabled={weeklyCardLoading}>
+                  <Text style={styles.primaryButtonText}>
+                    {weeklyCardLoading ? 'Generating...' : 'Generate share card'}
+                  </Text>
                 </Pressable>
+                {weeklyCard && (
+                  <Text style={styles.smallText}>
+                    Share URL: {weeklyCard.shareUrl}{'\n'}Referral: {weeklyCardReferralCode}
+                  </Text>
+                )}
               </View>
 
               <Text style={styles.sectionTitle}>Social Benchmarks</Text>
@@ -214,16 +787,19 @@ export default function App() {
             <>
               <Text style={styles.sectionTitle}>AI Financial Summary</Text>
               <View style={styles.card}>
-                <Text style={styles.cardBody}>
-                  You are saving faster than last month (+18%) but food delivery is trending up. If you cap delivery at
-                  {currency(95)}/week, you can hit your trip goal 2 weeks earlier.
-                </Text>
+                <Text style={styles.cardBody}>{latestSummary ?? 'Generate insights to produce your latest AI summary.'}</Text>
+                <Pressable style={styles.primaryButton} onPress={handleRunInsights} disabled={insightsLoading}>
+                  <Text style={styles.primaryButtonText}>
+                    {insightsLoading ? 'Running...' : 'Run insight generation'}
+                  </Text>
+                </Pressable>
+                {!!insightsMessage && <Text style={styles.smallText}>{insightsMessage}</Text>}
               </View>
               <Text style={styles.sectionTitle}>Variance & Recommendations</Text>
               <View style={styles.card}>
                 <Text style={styles.cardBody}>
-                  Budget variance detected in Wants (+9%). Corrective actions: pause two subscriptions, shift grocery
-                  run to lower-cost store, and auto-transfer {currency(40)} every Friday.
+                  Recommendations are generated by `vault-insights-generate` from active variances and available cash
+                  flow. Accepting them can be wired to one-tap actions in the next sprint.
                 </Text>
               </View>
             </>
@@ -246,6 +822,27 @@ const styles = StyleSheet.create({
   safe: {
     flex: 1,
     backgroundColor: '#070B18',
+  },
+  center: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 10,
+  },
+  centerText: {
+    color: '#C0D2F0',
+  },
+  authRoot: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+  },
+  authCard: {
+    backgroundColor: '#111A2D',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#202D4A',
+    padding: 16,
   },
   root: {
     flex: 1,
@@ -378,6 +975,59 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
+  inlineRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  providerChip: {
+    borderWidth: 1,
+    borderColor: '#314870',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  providerChipActive: {
+    backgroundColor: '#5BC4FF',
+    borderColor: '#5BC4FF',
+  },
+  providerChipText: {
+    color: '#97ADD3',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  providerChipTextActive: {
+    color: '#0A142C',
+  },
+  input: {
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: '#2A3A5D',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    color: '#F2F7FF',
+    backgroundColor: '#0D1528',
+  },
+  errorText: {
+    marginTop: 8,
+    color: '#FF9AB0',
+    fontSize: 13,
+  },
+  secondaryButton: {
+    marginTop: 12,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: '#31507E',
+    backgroundColor: '#162744',
+    alignSelf: 'flex-start',
+  },
+  secondaryButtonText: {
+    color: '#C8DCFF',
+    fontWeight: '600',
+    fontSize: 13,
+  },
   amount: {
     fontSize: 16,
     fontWeight: '700',
@@ -414,6 +1064,13 @@ const styles = StyleSheet.create({
     color: '#0A142C',
     fontWeight: '700',
     fontSize: 14,
+  },
+  ghostButton: {
+    marginTop: 10,
+  },
+  ghostButtonText: {
+    color: '#97ADD3',
+    fontWeight: '600',
   },
   navBar: {
     position: 'absolute',
