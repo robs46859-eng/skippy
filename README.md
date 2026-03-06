@@ -32,11 +32,23 @@ Vault automatically tracks spending, categorizes transactions, enforces budgets,
   - weekly share cards, referral system, benchmarks
   - RLS policies + realtime table publication
 
+- `supabase/migrations/02_vault_dashboard_views.sql`  
+  Dashboard-focused SQL layer with:
+  - uniqueness constraints for variance/recommendation integrity
+  - `vault_dashboard_snapshots` view
+  - `vault_dashboard_alert_counts` view
+
+- `supabase/functions/*`  
+  Working Edge Function endpoints for:
+  - bank sync orchestration (`vault-bank-sync`)
+  - insights/forecast/summaries (`vault-insights-generate`)
+  - weekly savings card generation (`vault-cards-weekly-generate`)
+
 ## Tech Stack
 - **Frontend**: React Native (Expo)
 - **State**: Zustand
 - **Backend**: Supabase (Postgres, Auth, Realtime, Storage)
-- **AI/Integrations (planned)**: OpenAI + bank provider adapter (Plaid/Teller/TrueLayer)
+- **AI/Integrations**: OpenAI (optional, fallback enabled) + bank provider adapter pattern (Plaid/Teller/TrueLayer)
 
 ## Quick Start
 1. Install deps:
