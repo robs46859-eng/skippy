@@ -33,6 +33,8 @@ Set in Supabase function secrets:
 - `PLAID_CLIENT_ID` (for Plaid)
 - `PLAID_SECRET` (for Plaid)
 - `PLAID_ENV` (`sandbox` | `development` | `production`)
+- `PLAID_ANDROID_PACKAGE_NAME` (must match Android app id)
+- `PLAID_REDIRECT_URI` (used for OAuth institutions)
 - Optional `PLAID_WEBHOOK_SECRET` (compared against `x-vault-webhook-secret` header)
 - Optional: `OPENAI_API_KEY`, `OPENAI_MODEL`, `EXPO_PUBLIC_SHARE_BASE_URL`
 

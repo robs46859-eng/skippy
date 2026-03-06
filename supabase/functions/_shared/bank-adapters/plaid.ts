@@ -157,6 +157,9 @@ export const plaidAdapter: BankAdapter = {
 
     if (input.redirectUri) payload.redirect_uri = input.redirectUri;
     if (input.webhookUrl) payload.webhook = input.webhookUrl;
+    if (input.androidPackageName) {
+      payload.android_package_name = input.androidPackageName;
+    }
 
     const response = await plaidRequest<{
       link_token: string;

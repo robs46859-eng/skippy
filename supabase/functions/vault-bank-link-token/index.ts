@@ -36,12 +36,17 @@ serve(async (req) => {
     const supabase = createServiceClient();
 
     const webhookUrl = Deno.env.get("PLAID_WEBHOOK_URL") ?? undefined;
+    const redirectUri = body.redirectUri ??
+      Deno.env.get("PLAID_REDIRECT_URI") ??
+      undefined;
+    const androidPackageName = Deno.env.get("PLAID_ANDROID_PACKAGE_NAME") ?? undefined;
 
     const link = await adapter.createLinkToken({
       userId,
       clientName: "Vault",
-      redirectUri: body.redirectUri,
+      redirectUri,
       webhookUrl,
+      androidPackageName,
     });
 
     await supabase.from("vault_event_outbox").insert({

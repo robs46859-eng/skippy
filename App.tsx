@@ -409,55 +409,113 @@ export default function App() {
     setWeeklyCardReferralCode(null);
   }, []);
 
+  const exchangeAndSync = useCallback(
+    async (providerToUse: BankProvider, publicTokenToUse: string) => {
+      if (!session?.access_token) return;
+      if (!publicTokenToUse.trim()) {
+        setBankMessage('Public token is required.');
+        return;
+      }
+
+      setBankLoading(true);
+      setBankMessage(null);
+      try {
+        const exchange = await exchangeBankPublicToken(
+          session.access_token,
+          providerToUse,
+          publicTokenToUse.trim(),
+        );
+        setConnectedConnectionId(exchange.connectionId);
+
+        const sync = await syncBankConnection(session.access_token, exchange.connectionId);
+        setBankMessage(
+          `Connected ${exchange.accountsLinked} account(s). Synced ${sync.transactionsProcessed} transactions.`,
+        );
+
+        await loadDashboard();
+        setPublicToken('');
+      } catch (error) {
+        setBankMessage(error instanceof Error ? error.message : 'Connection sync failed.');
+      } finally {
+        setBankLoading(false);
+      }
+    },
+    [loadDashboard, session?.access_token],
+  );
+
+  const launchPlaidLink = useCallback(
+    async (token: string) => {
+      if (Platform.OS === 'web') {
+        setBankMessage(
+          'Plaid native Link is not supported on web. Use iOS/Android dev build, or manual public token fallback.',
+        );
+        return;
+      }
+
+      const plaid = await import('react-native-plaid-link-sdk');
+      try {
+        await plaid.destroy();
+      } catch {
+        // Safe to ignore; destroy can fail when no prior instance exists.
+      }
+
+      plaid.create({
+        token,
+        noLoadingState: false,
+        onLoad: () => {
+          setBankMessage('Plaid Link loaded. Complete bank auth to continue.');
+        },
+      });
+
+      plaid.open({
+        onSuccess: async (success) => {
+          await exchangeAndSync('plaid', success.publicToken);
+        },
+        onExit: (exit) => {
+          if (exit?.error) {
+            const details = exit.error.displayMessage ?? exit.error.errorMessage;
+            setBankMessage(details || 'Plaid Link exited with an error.');
+            return;
+          }
+          setBankMessage('Plaid Link closed before completion.');
+        },
+      });
+    },
+    [exchangeAndSync],
+  );
+
   const handleCreateLinkToken = useCallback(async () => {
     if (!session?.access_token) return;
-
     setBankLoading(true);
     setBankMessage(null);
     try {
-      const response = await createBankLinkToken(session.access_token, provider);
+      const plaidRedirectUri = process.env.EXPO_PUBLIC_PLAID_REDIRECT_URI || undefined;
+      const response = await createBankLinkToken(
+        session.access_token,
+        provider,
+        provider === 'plaid' ? plaidRedirectUri : undefined,
+      );
       setLinkToken(response.linkToken);
-      if (provider === 'sandbox' && !publicToken.trim()) {
-        setPublicToken(`sandbox-public-${Date.now()}`);
+      if (provider === 'sandbox') {
+        await exchangeAndSync('sandbox', `sandbox-public-${Date.now()}`);
+        return;
       }
-      setBankMessage('Link token created. Complete provider authorization and paste public token below.');
+
+      await launchPlaidLink(response.linkToken);
     } catch (error) {
       setBankMessage(error instanceof Error ? error.message : 'Failed to create link token.');
     } finally {
       setBankLoading(false);
     }
-  }, [provider, publicToken, session?.access_token]);
+  }, [exchangeAndSync, launchPlaidLink, provider, session?.access_token]);
 
   const handleExchangeAndSync = useCallback(async () => {
-    if (!session?.access_token) return;
     if (!publicToken.trim()) {
       setBankMessage('Public token is required.');
       return;
     }
-
-    setBankLoading(true);
-    setBankMessage(null);
-    try {
-      const exchange = await exchangeBankPublicToken(
-        session.access_token,
-        provider,
-        publicToken.trim(),
-      );
-      setConnectedConnectionId(exchange.connectionId);
-
-      const sync = await syncBankConnection(session.access_token, exchange.connectionId);
-      setBankMessage(
-        `Connected ${exchange.accountsLinked} account(s). Synced ${sync.transactionsProcessed} transactions.`,
-      );
-
-      await loadDashboard();
-      setPublicToken('');
-    } catch (error) {
-      setBankMessage(error instanceof Error ? error.message : 'Connection sync failed.');
-    } finally {
-      setBankLoading(false);
-    }
-  }, [loadDashboard, provider, publicToken, session?.access_token]);
+    await exchangeAndSync(provider, publicToken);
+  }, [exchangeAndSync, provider, publicToken]);
 
   const handleRunInsights = useCallback(async () => {
     if (!session?.access_token) return;
@@ -616,7 +674,11 @@ export default function App() {
                 </View>
                 <Pressable style={styles.secondaryButton} onPress={handleCreateLinkToken} disabled={bankLoading}>
                   <Text style={styles.secondaryButtonText}>
-                    {bankLoading ? 'Preparing...' : '1) Launch Link'}
+                    {bankLoading
+                      ? 'Preparing...'
+                      : provider === 'plaid'
+                      ? 'Connect with Plaid Link'
+                      : 'Connect sandbox account'}
                   </Text>
                 </Pressable>
 
@@ -625,23 +687,27 @@ export default function App() {
                     Link token ready: {linkToken.slice(0, 16)}...{linkToken.slice(-6)}
                   </Text>
                 )}
-                <TextInput
-                  style={styles.input}
-                  value={publicToken}
-                  onChangeText={setPublicToken}
-                  autoCapitalize="none"
-                  placeholder="2) Paste provider public token"
-                  placeholderTextColor="#778DB6"
-                />
-                <Pressable
-                  style={styles.primaryButton}
-                  onPress={handleExchangeAndSync}
-                  disabled={bankLoading || !publicToken.trim()}
-                >
-                  <Text style={styles.primaryButtonText}>
-                    {bankLoading ? 'Connecting...' : '3) Exchange + Sync + Refresh'}
-                  </Text>
-                </Pressable>
+                {provider === 'plaid' && (
+                  <>
+                    <TextInput
+                      style={styles.input}
+                      value={publicToken}
+                      onChangeText={setPublicToken}
+                      autoCapitalize="none"
+                      placeholder="Manual fallback: paste Plaid public token"
+                      placeholderTextColor="#778DB6"
+                    />
+                    <Pressable
+                      style={styles.primaryButton}
+                      onPress={handleExchangeAndSync}
+                      disabled={bankLoading || !publicToken.trim()}
+                    >
+                      <Text style={styles.primaryButtonText}>
+                        {bankLoading ? 'Connecting...' : 'Manual exchange + sync'}
+                      </Text>
+                    </Pressable>
+                  </>
+                )}
                 {!!connectedConnectionId && (
                   <Text style={styles.smallText}>Connected ID: {connectedConnectionId}</Text>
                 )}

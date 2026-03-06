@@ -80,6 +80,14 @@ cp .env.example .env
 npx expo start
 ```
 
+## Plaid Mobile Integration Notes
+- Plaid Link is wired with the official `react-native-plaid-link-sdk`.
+- Use a native iOS/Android build for Plaid Link (Expo Go does not support custom native modules).
+- Ensure app identifiers match your Plaid Link token config:
+  - Android package: `com.vault.app`
+  - iOS bundle id: `com.vault.app`
+  - redirect URI (for OAuth institutions): `vault://plaid/oauth`
+
 ## Suggested MVP Sequence
 1. Activation core (auth + bank connect + budget setup)
 2. Habit loop (alerts + goals + streaks + forecast)

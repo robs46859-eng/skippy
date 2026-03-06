@@ -85,9 +85,11 @@ export type WeeklyCardGenerateResponse = {
 export async function createBankLinkToken(
   accessToken: string,
   provider: SupportedProvider,
+  redirectUri?: string,
 ): Promise<BankLinkTokenResponse> {
   return callVaultFunction<BankLinkTokenResponse>('vault-bank-link-token', accessToken, {
     provider,
+    redirectUri,
   });
 }
 

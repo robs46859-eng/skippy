@@ -5,6 +5,7 @@ export type AdapterCreateLinkTokenInput = {
   clientName?: string;
   redirectUri?: string;
   webhookUrl?: string;
+  androidPackageName?: string;
 };
 
 export type AdapterCreateLinkTokenResult = {
