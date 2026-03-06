@@ -5,6 +5,7 @@ import {
   jsonResponse,
   requireMethod,
 } from "../_shared/http.ts";
+import { verifyPlaidWebhookSignature } from "../_shared/plaidWebhookVerification.ts";
 import { createServiceClient } from "../_shared/supabase.ts";
 
 type PlaidWebhookPayload = {
@@ -23,16 +24,6 @@ function shouldTriggerSync(payload: PlaidWebhookPayload): boolean {
   return false;
 }
 
-function verifyWebhookSecret(req: Request): boolean {
-  const expected = Deno.env.get("PLAID_WEBHOOK_SECRET");
-  if (!expected) return true;
-
-  const candidate = req.headers.get("x-vault-webhook-secret") ??
-    req.headers.get("plaid-webhook-secret") ??
-    req.headers.get("x-plaid-webhook-secret");
-  return Boolean(candidate && candidate === expected);
-}
-
 serve(async (req) => {
   const preflight = handlePreflight(req);
   if (preflight) return preflight;
@@ -40,12 +31,29 @@ serve(async (req) => {
   const methodError = requireMethod(req, "POST");
   if (methodError) return methodError;
 
-  if (!verifyWebhookSecret(req)) {
-    return errorResponse("Invalid webhook secret.", 401);
-  }
-
   try {
     const rawBody = await req.text();
+    const verificationBypass =
+      (Deno.env.get("PLAID_WEBHOOK_VERIFICATION_DISABLED") ?? "false") === "true";
+    if (!verificationBypass) {
+      const plaidVerificationToken = req.headers.get("Plaid-Verification") ??
+        req.headers.get("plaid-verification");
+      if (!plaidVerificationToken) {
+        return errorResponse("Missing Plaid-Verification header.", 401);
+      }
+      try {
+        await verifyPlaidWebhookSignature(plaidVerificationToken, rawBody);
+      } catch (verificationError) {
+        return errorResponse(
+          "Invalid Plaid webhook signature.",
+          401,
+          verificationError instanceof Error
+            ? verificationError.message
+            : String(verificationError),
+        );
+      }
+    }
+
     const payload = (JSON.parse(rawBody) ?? {}) as PlaidWebhookPayload;
     const webhookType = payload.webhook_type ?? null;
     const webhookCode = payload.webhook_code ?? null;

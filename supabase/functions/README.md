@@ -15,7 +15,10 @@ These functions implement core backend workflows for the Vault MVP:
   - other providers: queues sync request in `vault_event_outbox`.
 
 - `vault-bank-webhook`  
-  Receives provider webhook events and queues sync work when updates are available.
+  Receives provider webhook events, verifies Plaid JWT signatures, and queues sync work when updates are available.
+
+- `vault-outbox-worker`  
+  Processes actionable outbox jobs (currently `bank_sync_requested`) with retry/backoff.
 
 - `vault-insights-generate`  
   Generates forecasts, variance entries, recommendations, and AI/fallback summaries.
@@ -35,10 +38,11 @@ Set in Supabase function secrets:
 - `PLAID_ENV` (`sandbox` | `development` | `production`)
 - `PLAID_ANDROID_PACKAGE_NAME` (must match Android app id)
 - `PLAID_REDIRECT_URI` (used for OAuth institutions)
-- Optional `PLAID_WEBHOOK_SECRET` (compared against `x-vault-webhook-secret` header)
+- `VAULT_INTERNAL_WORKER_SECRET` (required for worker + internal function invocations)
+- Optional `PLAID_WEBHOOK_VERIFICATION_DISABLED=true` for local-only debugging
 - Optional: `OPENAI_API_KEY`, `OPENAI_MODEL`, `EXPO_PUBLIC_SHARE_BASE_URL`
 
-Note: webhook verification in this MVP uses a shared secret header. For production Plaid deployments, add full Plaid webhook signature verification.
+Webhook security: `vault-bank-webhook` validates the `Plaid-Verification` JWT signature using Plaid's `/webhook_verification_key/get`, verifies SHA-256 body hash, and enforces iat recency window.
 
 ## Local Invocation Examples
 
@@ -90,6 +94,14 @@ curl -X POST http://127.0.0.1:54321/functions/v1/vault-cards-weekly-generate \
 ```bash
 curl -X POST http://127.0.0.1:54321/functions/v1/vault-bank-webhook \
   -H "Content-Type: application/json" \
-  -H "x-vault-webhook-secret: <PLAID_WEBHOOK_SECRET>" \
+  -H "Plaid-Verification: <signed_jwt_from_plaid>" \
   -d '{"webhook_type":"TRANSACTIONS","webhook_code":"SYNC_UPDATES_AVAILABLE","item_id":"<item_id>"}'
+```
+
+### 5) Outbox worker
+```bash
+curl -X POST http://127.0.0.1:54321/functions/v1/vault-outbox-worker \
+  -H "Content-Type: application/json" \
+  -H "x-vault-internal-secret: <VAULT_INTERNAL_WORKER_SECRET>" \
+  -d '{"batchSize":20,"maxAttempts":6}'
 ```

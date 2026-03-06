@@ -48,11 +48,17 @@ Vault automatically tracks spending, categorizes transactions, enforces budgets,
   - webhook event log table (`vault_bank_webhook_events`)
   - user-scoped RLS for webhook observability
 
+- `supabase/migrations/04_vault_outbox_worker_support.sql`  
+  Worker support with:
+  - outbox `last_error` diagnostics column
+  - optimized index for pending event processing
+
 - `supabase/functions/*`  
   Working Edge Function endpoints for:
   - bank link-token + token exchange (`vault-bank-link-token`, `vault-bank-exchange-token`)
   - bank sync orchestration (`vault-bank-sync`)
-  - provider webhook ingestion (`vault-bank-webhook`)
+  - provider webhook ingestion with Plaid signature verification (`vault-bank-webhook`)
+  - outbox worker with retry/backoff (`vault-outbox-worker`)
   - insights/forecast/summaries (`vault-insights-generate`)
   - weekly savings card generation (`vault-cards-weekly-generate`)
 

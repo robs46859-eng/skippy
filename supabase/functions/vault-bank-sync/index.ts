@@ -22,6 +22,7 @@ import { createServiceClient, requireUserFromRequest } from "../_shared/supabase
 type SyncBody = {
   connectionId?: string;
   maxTransactions?: number;
+  userId?: string;
 };
 
 type VaultAccount = {
@@ -86,8 +87,27 @@ serve(async (req) => {
   if (methodError) return methodError;
 
   try {
-    const { userId } = await requireUserFromRequest(req);
     const body = (await req.json().catch(() => ({}))) as SyncBody;
+    let userId = "";
+    try {
+      const authContext = await requireUserFromRequest(req);
+      userId = authContext.userId;
+    } catch (authError) {
+      const internalSecret = Deno.env.get("VAULT_INTERNAL_WORKER_SECRET");
+      const presentedSecret = req.headers.get("x-vault-internal-secret");
+      const internalUserId = body.userId?.trim() ?? "";
+
+      if (
+        internalSecret &&
+        presentedSecret === internalSecret &&
+        internalUserId.length > 0
+      ) {
+        userId = internalUserId;
+      } else {
+        throw authError;
+      }
+    }
+
     const connectionId = body.connectionId;
     const maxTransactions = body.maxTransactions ?? 8;
 
