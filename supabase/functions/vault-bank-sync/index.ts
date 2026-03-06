@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { getBankAdapter } from "../_shared/bank-adapters/index.ts";
 import {
   categoryConfidence,
   classifyCategorySlug,
@@ -98,7 +99,7 @@ serve(async (req) => {
 
     const { data: connection, error: connectionError } = await supabase
       .from("vault_bank_connections")
-      .select("id, user_id, provider, institution_name, sync_cursor, status")
+      .select("id, user_id, provider, institution_name, sync_cursor, status, access_token_ref")
       .eq("id", connectionId)
       .eq("user_id", userId)
       .maybeSingle();
@@ -110,7 +111,169 @@ serve(async (req) => {
       return errorResponse("Bank connection not found.", 404);
     }
 
-    if (connection.provider !== "sandbox") {
+    const { data: currentAccounts, error: accountsError } = await supabase
+      .from("vault_bank_accounts")
+      .select("id, provider_account_id, account_name, account_type")
+      .eq("connection_id", connectionId)
+      .eq("user_id", userId)
+      .eq("is_active", true);
+
+    if (accountsError) {
+      return errorResponse("Failed to load connected accounts.", 500, accountsError.message);
+    }
+
+    let accounts = (currentAccounts ?? []) as VaultAccount[];
+    let removedProviderTransactionIds: string[] = [];
+    let nextCursor: string | null = connection.sync_cursor;
+    let transactionRowsForUpsert: Array<{
+      user_id: string;
+      account_id: string;
+      provider_transaction_id: string;
+      merchant_name: string;
+      description: string;
+      amount: number;
+      iso_currency_code: string;
+      posted_at: string;
+      pending: boolean;
+      normalized_merchant: string;
+    }> = [];
+
+    if (connection.provider === "sandbox") {
+      if (accounts.length === 0) {
+        const seedAccount = {
+          connection_id: connectionId,
+          user_id: userId,
+          provider_account_id: "sandbox-checking-001",
+          account_name: `${connection.institution_name ?? "Sandbox"} Checking`,
+          account_type: "checking",
+          subtype: "checking",
+          iso_currency_code: "USD",
+          current_balance: 4200,
+          available_balance: 4100,
+          is_active: true,
+        };
+
+        const { error: insertAccountError } = await supabase
+          .from("vault_bank_accounts")
+          .upsert(seedAccount, { onConflict: "connection_id,provider_account_id" });
+
+        if (insertAccountError) {
+          return errorResponse("Failed to initialize sandbox account.", 500, insertAccountError.message);
+        }
+
+        const { data: seededAccounts, error: seededAccountsError } = await supabase
+          .from("vault_bank_accounts")
+          .select("id, provider_account_id, account_name, account_type")
+          .eq("connection_id", connectionId)
+          .eq("user_id", userId)
+          .eq("is_active", true);
+
+        if (seededAccountsError) {
+          return errorResponse("Failed to load seeded account.", 500, seededAccountsError.message);
+        }
+        accounts = (seededAccounts ?? []) as VaultAccount[];
+      }
+
+      transactionRowsForUpsert = accounts.flatMap((account) =>
+        createSandboxTransactions(account, maxTransactions).map((txn) => ({
+          user_id: userId,
+          account_id: account.id,
+          provider_transaction_id: txn.providerTransactionId,
+          merchant_name: txn.merchantName,
+          description: txn.description,
+          amount: txn.amount,
+          iso_currency_code: "USD",
+          posted_at: txn.postedAt,
+          pending: txn.pending ?? false,
+          normalized_merchant: txn.merchantName.toLowerCase(),
+        }))
+      );
+    } else if (connection.provider === "plaid") {
+      if (accounts.length === 0) {
+        return errorResponse(
+          "No linked accounts for this Plaid connection. Exchange token first.",
+          409,
+        );
+      }
+
+      const adapter = getBankAdapter("plaid");
+      const syncResult = await adapter.syncTransactions({
+        accessTokenRef: String(connection.access_token_ref ?? ""),
+        cursor: connection.sync_cursor,
+      });
+      removedProviderTransactionIds = syncResult.removedProviderTransactionIds;
+      nextCursor = syncResult.nextCursor ?? connection.sync_cursor;
+
+      const accountIdByProvider = new Map<string, string>();
+      for (const account of accounts) {
+        accountIdByProvider.set(account.provider_account_id, account.id);
+      }
+
+      const missingProviderAccountIds = Array.from(
+        new Set(
+          syncResult.upserts
+            .map((txn) => txn.providerAccountId)
+            .filter((providerAccountId) => !accountIdByProvider.has(providerAccountId)),
+        ),
+      );
+
+      if (missingProviderAccountIds.length > 0) {
+        const placeholderAccounts = missingProviderAccountIds.map((providerAccountId, index) => ({
+          connection_id: connectionId,
+          user_id: userId,
+          provider_account_id: providerAccountId,
+          account_name: `Linked Account ${index + 1}`,
+          account_type: "checking",
+          subtype: "unknown",
+          iso_currency_code: "USD",
+          is_active: true,
+        }));
+
+        const { error: placeholderInsertError } = await supabase
+          .from("vault_bank_accounts")
+          .upsert(placeholderAccounts, { onConflict: "connection_id,provider_account_id" });
+
+        if (placeholderInsertError) {
+          return errorResponse("Failed to create missing Plaid accounts.", 500, placeholderInsertError.message);
+        }
+
+        const { data: refreshedAccounts, error: refreshedAccountsError } = await supabase
+          .from("vault_bank_accounts")
+          .select("id, provider_account_id, account_name, account_type")
+          .eq("connection_id", connectionId)
+          .eq("user_id", userId)
+          .eq("is_active", true);
+
+        if (refreshedAccountsError) {
+          return errorResponse("Failed to refresh account mapping.", 500, refreshedAccountsError.message);
+        }
+
+        accounts = (refreshedAccounts ?? []) as VaultAccount[];
+        accountIdByProvider.clear();
+        for (const account of accounts) {
+          accountIdByProvider.set(account.provider_account_id, account.id);
+        }
+      }
+
+      transactionRowsForUpsert = syncResult.upserts
+        .map((txn) => {
+          const accountId = accountIdByProvider.get(txn.providerAccountId);
+          if (!accountId) return null;
+          return {
+            user_id: userId,
+            account_id: accountId,
+            provider_transaction_id: txn.providerTransactionId,
+            merchant_name: txn.merchantName ?? txn.description,
+            description: txn.description,
+            amount: txn.amount,
+            iso_currency_code: txn.isoCurrencyCode ?? "USD",
+            posted_at: txn.postedAt,
+            pending: txn.pending,
+            normalized_merchant: (txn.normalizedMerchant ?? txn.merchantName ?? txn.description).toLowerCase(),
+          };
+        })
+        .filter((row): row is NonNullable<typeof row> => Boolean(row));
+    } else {
       const { error: queueError } = await supabase.from("vault_event_outbox").insert({
         user_id: userId,
         event_type: "bank_sync_requested",
@@ -139,78 +302,31 @@ serve(async (req) => {
       });
     }
 
-    const { data: currentAccounts, error: accountsError } = await supabase
-      .from("vault_bank_accounts")
-      .select("id, provider_account_id, account_name, account_type")
-      .eq("connection_id", connectionId)
-      .eq("user_id", userId)
-      .eq("is_active", true);
+    let txRows: Array<{ id: string; amount: number; merchant_name: string | null; posted_at: string }> = [];
+    if (transactionRowsForUpsert.length > 0) {
+      const { data: upsertedTransactions, error: upsertTransactionsError } = await supabase
+        .from("vault_transactions")
+        .upsert(transactionRowsForUpsert, { onConflict: "account_id,provider_transaction_id" })
+        .select("id, amount, merchant_name, posted_at");
 
-    if (accountsError) {
-      return errorResponse("Failed to load connected accounts.", 500, accountsError.message);
+      if (upsertTransactionsError) {
+        return errorResponse("Failed to sync transactions.", 500, upsertTransactionsError.message);
+      }
+      txRows = upsertedTransactions ?? [];
     }
 
-    let accounts = (currentAccounts ?? []) as VaultAccount[];
-    if (accounts.length === 0) {
-      const seedAccount = {
-        connection_id: connectionId,
-        user_id: userId,
-        provider_account_id: "sandbox-checking-001",
-        account_name: `${connection.institution_name ?? "Sandbox"} Checking`,
-        account_type: "checking",
-        subtype: "checking",
-        iso_currency_code: "USD",
-        current_balance: 4200,
-        available_balance: 4100,
-        is_active: true,
-      };
-
-      const { error: insertAccountError } = await supabase
-        .from("vault_bank_accounts")
-        .upsert(seedAccount, { onConflict: "connection_id,provider_account_id" });
-
-      if (insertAccountError) {
-        return errorResponse("Failed to initialize sandbox account.", 500, insertAccountError.message);
-      }
-
-      const { data: seededAccounts, error: seededAccountsError } = await supabase
-        .from("vault_bank_accounts")
-        .select("id, provider_account_id, account_name, account_type")
-        .eq("connection_id", connectionId)
+    if (removedProviderTransactionIds.length > 0) {
+      const { error: removedDeleteError } = await supabase
+        .from("vault_transactions")
+        .delete()
         .eq("user_id", userId)
-        .eq("is_active", true);
+        .in("provider_transaction_id", removedProviderTransactionIds);
 
-      if (seededAccountsError) {
-        return errorResponse("Failed to load seeded account.", 500, seededAccountsError.message);
+      if (removedDeleteError) {
+        return errorResponse("Failed to remove stale provider transactions.", 500, removedDeleteError.message);
       }
-      accounts = (seededAccounts ?? []) as VaultAccount[];
     }
 
-    const allTransactions = accounts.flatMap((account) =>
-      createSandboxTransactions(account, maxTransactions).map((txn) => ({
-        user_id: userId,
-        account_id: account.id,
-        provider_transaction_id: txn.providerTransactionId,
-        merchant_name: txn.merchantName,
-        description: txn.description,
-        amount: txn.amount,
-        iso_currency_code: "USD",
-        posted_at: txn.postedAt,
-        pending: txn.pending ?? false,
-        normalized_merchant: txn.merchantName.toLowerCase(),
-      }))
-    );
-
-    const { data: upsertedTransactions, error: upsertTransactionsError } = await supabase
-      .from("vault_transactions")
-      .upsert(allTransactions, { onConflict: "account_id,provider_transaction_id" })
-      .select("id, amount, merchant_name, posted_at");
-
-    if (upsertTransactionsError) {
-      return errorResponse("Failed to sync transactions.", 500, upsertTransactionsError.message);
-    }
-
-    const txRows = upsertedTransactions ?? [];
     const transactionIds = txRows.map((row) => row.id as string);
 
     const { data: categoryRows, error: categoriesError } = await supabase
@@ -471,7 +587,7 @@ serve(async (req) => {
 
     await supabase.from("vault_bank_connections")
       .update({
-        sync_cursor: `sandbox:${new Date().toISOString()}`,
+        sync_cursor: nextCursor ?? `sync:${new Date().toISOString()}`,
         last_synced_at: new Date().toISOString(),
         status: "active",
       })
@@ -483,8 +599,9 @@ serve(async (req) => {
       connectionId,
       provider: connection.provider,
       accountsSynced: accounts.length,
-      transactionsSynced: allTransactions.length,
+      transactionsSynced: transactionRowsForUpsert.length,
       transactionsProcessed: transactionIds.length,
+      transactionsRemoved: removedProviderTransactionIds.length,
       budgetsEvaluated,
       overspendAlertsCreated,
       monthPeriod: { start: periodStart, end: periodEnd },

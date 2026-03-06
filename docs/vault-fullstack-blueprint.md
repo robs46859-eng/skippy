@@ -185,6 +185,7 @@ Banking:
 - `POST /bank/link-token`
 - `POST /bank/exchange-token`
 - `POST /bank/sync`
+- `POST /bank/webhook/plaid`
 - `GET /bank/accounts`
 
 Budget:

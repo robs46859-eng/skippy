@@ -38,9 +38,16 @@ Vault automatically tracks spending, categorizes transactions, enforces budgets,
   - `vault_dashboard_snapshots` view
   - `vault_dashboard_alert_counts` view
 
+- `supabase/migrations/03_vault_bank_adapter_wiring.sql`  
+  Bank integration support with:
+  - webhook event log table (`vault_bank_webhook_events`)
+  - user-scoped RLS for webhook observability
+
 - `supabase/functions/*`  
   Working Edge Function endpoints for:
+  - bank link-token + token exchange (`vault-bank-link-token`, `vault-bank-exchange-token`)
   - bank sync orchestration (`vault-bank-sync`)
+  - provider webhook ingestion (`vault-bank-webhook`)
   - insights/forecast/summaries (`vault-insights-generate`)
   - weekly savings card generation (`vault-cards-weekly-generate`)
 
