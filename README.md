@@ -1,47 +1,104 @@
-# Skipper ⚓️
+# Vault 💸
 
-A pregnancy/mother-focused navigation app with calm, safety-first UX.
+Mobile-first AI budgeting app optimized for retention and virality.
+
+Vault automatically tracks spending, categorizes transactions, enforces budgets, predicts cash flow, and drives savings habits with instant feedback plus social growth mechanics.
+
+## Core Product Pillars
+- Secure auth and user-scoped data access (Supabase Auth + RLS)
+- Bank sync-ready architecture (provider adapter pattern)
+- Real-time budget dashboard and overspending alerts
+- Auto expense categorization with correction feedback loop
+- Savings goals, streaks, and milestone celebrations
+- Predictive cash-flow risk insights
+- AI financial summaries + budget variance recommendations
+- Viral loop: share cards, referrals, social-proof benchmarks
+
+## Repository Highlights
+- `App.tsx`  
+  Mobile-first premium fintech UI prototype with key product tabs:
+  Dashboard, Activity, Goals, Social, AI Insights.
+  Includes secure auth and live bank-connect flow:
+  1) create link token
+  2) exchange public token
+  3) sync transactions
+  4) refresh dashboard from realtime-backed views
+
+- `docs/vault-fullstack-blueprint.md`  
+  Full-stack architecture, backend logic, API surface, frontend page map, security model, viral mechanics, and MVP build order.
+
+- `supabase/migrations/01_vault_budgeting_schema.sql`  
+  Production-oriented Vault schema with:
+  - banking integration primitives
+  - transactions and categorization
+  - budgets, snapshots, variances, recommendations
+  - alerts, forecasts, AI summaries
+  - savings goals, streaks, milestones
+  - weekly share cards, referral system, benchmarks
+  - RLS policies + realtime table publication
+
+- `supabase/migrations/02_vault_dashboard_views.sql`  
+  Dashboard-focused SQL layer with:
+  - uniqueness constraints for variance/recommendation integrity
+  - `vault_dashboard_snapshots` view
+  - `vault_dashboard_alert_counts` view
+
+- `supabase/migrations/03_vault_bank_adapter_wiring.sql`  
+  Bank integration support with:
+  - webhook event log table (`vault_bank_webhook_events`)
+  - user-scoped RLS for webhook observability
+
+- `supabase/migrations/04_vault_outbox_worker_support.sql`  
+  Worker support with:
+  - outbox `last_error` diagnostics column
+  - optimized index for pending event processing
+
+- `supabase/functions/*`  
+  Working Edge Function endpoints for:
+  - bank link-token + token exchange (`vault-bank-link-token`, `vault-bank-exchange-token`)
+  - bank sync orchestration (`vault-bank-sync`)
+  - provider webhook ingestion with Plaid signature verification (`vault-bank-webhook`)
+  - outbox worker with retry/backoff (`vault-outbox-worker`)
+  - insights/forecast/summaries (`vault-insights-generate`)
+  - weekly savings card generation (`vault-cards-weekly-generate`)
 
 ## Tech Stack
 - **Frontend**: React Native (Expo)
-- **Styling**: NativeWind (Tailwind CSS)
-- **Backend**: Supabase (Postgres, Auth, Storage)
 - **State**: Zustand
-- **Icons**: Lucide React Native
+- **Backend**: Supabase (Postgres, Auth, Realtime, Storage)
+- **AI/Integrations**: OpenAI (optional, fallback enabled) + bank provider adapter pattern (Plaid/Teller/TrueLayer)
 
-## Getting Started
-
-### 1. Clone & Install
+## Quick Start
+1. Install deps:
 ```bash
-git clone https://github.com/robs46859-eng/skippy.git
-cd skippy
 npm install
 ```
 
-### 2. Environment Setup
-Create a `.env` file based on `.env.example`:
+2. Configure environment:
 ```bash
-EXPO_PUBLIC_SUPABASE_URL=your_project_url
-EXPO_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
+cp .env.example .env
 ```
 
-### 3. Database Setup
-Apply migrations in `/supabase/migrations` to your Supabase project using the SQL Editor or Supabase CLI.
+3. Apply migrations in `supabase/migrations` to your Supabase project.
 
-### 4. Run App
+4. Run app:
 ```bash
 npx expo start
 ```
 
-## MVP Features
-- [x] High-fidelity UI with custom design tokens
-- [x] Onboarding flow (Stage selection)
-- [x] Home Map interface with Comfort Mode toggle
-- [x] Quick actions for Essentials (Bathroom, Nursing, etc.)
-- [x] Essentials Finder list with ratings & distance
-- [x] Supabase schema with RLS and automated aggregates
-- [x] Labor Mode (Emergency navigation interface)
+## Plaid Mobile Integration Notes
+- Plaid Link is wired with the official `react-native-plaid-link-sdk`.
+- Use a native iOS/Android build for Plaid Link (Expo Go does not support custom native modules).
+- Ensure app identifiers match your Plaid Link token config:
+  - Android package: `com.vault.app`
+  - iOS bundle id: `com.vault.app`
+  - redirect URI (for OAuth institutions): `vault://plaid/oauth`
 
-## Design System
-- **Colors**: Soft Teal (#4FB6B2), Warm Coral (#FF8E7A), Warm Cream (#FFF8F3)
-- **Components**: Rounded corners (20px), soft shadows, accessible tap targets (>= 48px)
+## Suggested MVP Sequence
+1. Activation core (auth + bank connect + budget setup)
+2. Habit loop (alerts + goals + streaks + forecast)
+3. AI layer (summaries + variance + recommendations)
+4. Viral loop (share cards + referrals + benchmarks)
+
+Detailed sequencing and success gates are in:
+`docs/vault-fullstack-blueprint.md`.

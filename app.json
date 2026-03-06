@@ -1,8 +1,9 @@
 {
   "expo": {
-    "name": "skippy",
-    "slug": "skippy",
+    "name": "vault",
+    "slug": "vault",
     "version": "1.0.0",
+    "scheme": "vault",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -12,9 +13,14 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.vault.app",
+      "infoPlist": {
+        "LSApplicationQueriesSchemes": ["plaid"]
+      }
     },
     "android": {
+      "package": "com.vault.app",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
